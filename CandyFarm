@@ -158,7 +158,7 @@ local function ensureGUI()
 		titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
 		titleLabel.Position = UDim2.new(0, 5, 0, 0)
 		titleLabel.BackgroundTransparency = 1
-		titleLabel.Text = "📱 АВТО-ТП"
+		titleLabel.Text = "📱 CandyFarm"
 		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 		titleLabel.TextSize = 12
 		titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -206,7 +206,7 @@ local function ensureGUI()
 		toggleButton.Size = UDim2.new(0.9, 0, 0, 35)
 		toggleButton.Position = UDim2.new(0.05, 0, 0, 10)
 		toggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-		toggleButton.Text = "▶ СТАРТ"
+		toggleButton.Text = "▶ Start"
 		toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		toggleButton.TextSize = 14
 		toggleButton.Font = Enum.Font.GothamBold
@@ -226,7 +226,7 @@ local function ensureGUI()
 		statusLabel.Size = UDim2.new(1, 0, 0, 20)
 		statusLabel.Position = UDim2.new(0, 5, 0, 50)
 		statusLabel.BackgroundTransparency = 1
-		statusLabel.Text = "❌ ВЫКЛ"
+		statusLabel.Text = "❌ Not Working"
 		statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 		statusLabel.TextSize = 11
 		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
