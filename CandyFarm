@@ -158,7 +158,7 @@ local function ensureGUI()
 		titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
 		titleLabel.Position = UDim2.new(0, 5, 0, 0)
 		titleLabel.BackgroundTransparency = 1
-		titleLabel.Text = "📱 CandyFarm"
+		titleLabel.Text = "📱 Auto TP"
 		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 		titleLabel.TextSize = 12
 		titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -226,7 +226,7 @@ local function ensureGUI()
 		statusLabel.Size = UDim2.new(1, 0, 0, 20)
 		statusLabel.Position = UDim2.new(0, 5, 0, 50)
 		statusLabel.BackgroundTransparency = 1
-		statusLabel.Text = "❌ Not Working"
+		statusLabel.Text = "❌ OFF"
 		statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 		statusLabel.TextSize = 11
 		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -283,11 +283,11 @@ local function ensureGUI()
 		local function updateButtonAppearance()
 			if isEnabled then
 				toggleButton.Text = "⏹ Stop"
-				statusLabel.Text = "✅ Working"
+				statusLabel.Text = "✅ ON"
 				statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 			else
 				toggleButton.Text = "▶ Start"
-				statusLabel.Text = "❌ Not Working"
+				statusLabel.Text = "❌ OFF"
 				statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 			end
 		end
@@ -377,7 +377,10 @@ local function teleportToAllHousesInOrder()
 	end
 
 	for i, houseData in ipairs(allHouses) do
-		if not isEnabled then break end
+		if not isEnabled then 
+			isTeleporting = false
+			break 
+		end
 
 		rootPart.CFrame = houseData.doorPart.CFrame
 		
@@ -392,12 +395,12 @@ local function teleportToAllHousesInOrder()
 
 	if isEnabled then
 		if houseInfoLabel then
-			houseInfoLabel.Text = "✅ Completed"
+			houseInfoLabel.Text = "✅ Done"
 		end
 		
 		wait(SETTINGS.WAIT_BEFORE_DEATH)
 		
-		if character then
+		if character and character:FindFirstChild("HumanoidRootPart") then
 			teleportUnderMap(character)
 			if houseInfoLabel then
 				houseInfoLabel.Text = "⬇️ Down"
@@ -414,7 +417,14 @@ function startMainLoop()
 	end
 
 	mainLoopConnection = RunService.Heartbeat:Connect(function()
-		if not isEnabled then return end
+		if not isEnabled then 
+			if mainLoopConnection then
+				mainLoopConnection:Disconnect()
+				mainLoopConnection = nil
+			end
+			return 
+		end
+		
 		if isTeleporting then return end
 		if not player.Character then return end
 
@@ -436,6 +446,7 @@ function stopMainLoop()
 		mainLoopConnection = nil
 	end
 	isTeleporting = false
+	isEnabled = false
 
 	if houseInfoLabel then
 		local allHouses = findAllHousesInOrder()
