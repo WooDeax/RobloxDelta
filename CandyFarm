@@ -7,9 +7,9 @@ local TweenService = game:GetService("TweenService")
 local player = game.Players.LocalPlayer
 
 local SETTINGS = {
-	WAIT_BETWEEN_DOORS = 1,
-	WAIT_BEFORE_DEATH = 1,
-	CHECK_INTERVAL = 2
+    WAIT_BETWEEN_DOORS = 1,
+    REVISIT_TIME = 15, -- Через 15 секунд телепортируемся снова
+    CONTROL_UPDATE_INTERVAL = 2 -- Обновление управления каждые 2 секунды
 }
 
 local isEnabled = false
@@ -22,466 +22,588 @@ local lastToggleTime = 0
 local TOGGLE_COOLDOWN = 1
 local scriptActive = true
 local currentHouseCount = 0
+local startPosition = nil
+local visitedHouses = {}
+local lastVisitTimes = {}
+local controlUpdateConnection = nil
 
-local function enableNoClip(character)
-	if character then
-		local humanoid = character:FindFirstChild("Humanoid")
-		if humanoid then
-			humanoid:ChangeState(11)
-		end
-	end
-end
-
-local function teleportUnderMap(character)
-	if character then
-		local rootPart = character:FindFirstChild("HumanoidRootPart")
-		if rootPart then
-			local newPosition = Vector3.new(0, -5000, 0)
-			rootPart.CFrame = CFrame.new(newPosition)
-		end
-	end
+-- Очищаем посещенные дома которые пропали
+local function cleanupVisitedHouses()
+    local currentHouses = {}
+    local houses = workspace:FindFirstChild("Houses")
+    
+    if houses then
+        for _, house in pairs(houses:GetChildren()) do
+            if house:FindFirstChild("Door") then
+                currentHouses[house.Name] = true
+            end
+        end
+    end
+    
+    for houseName in pairs(visitedHouses) do
+        if not currentHouses[houseName] then
+            visitedHouses[houseName] = nil
+            lastVisitTimes[houseName] = nil
+        end
+    end
 end
 
 local function clampPosition(position, size)
-	local viewportSize = workspace.CurrentCamera.ViewportSize
-	local x = math.clamp(position.X.Offset, 10, viewportSize.X - size.X.Offset - 10)
-	local y = math.clamp(position.Y.Offset, 10, viewportSize.Y - size.Y.Offset - 10)
-	return UDim2.new(0, x, 0, y)
+    local viewportSize = workspace.CurrentCamera.ViewportSize
+    local x = math.clamp(position.X.Offset, 10, viewportSize.X - size.X.Offset - 10)
+    local y = math.clamp(position.Y.Offset, 10, viewportSize.Y - size.Y.Offset - 10)
+    return UDim2.new(0, x, 0, y)
+end
+
+-- Функция для создания градиента под углом 32.5 градуса (от темного к белому и обратно к темному)
+local function createGradient(parent, baseColor)
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, baseColor), -- Темный
+        ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)), -- Белый в середине
+        ColorSequenceKeypoint.new(1, baseColor) -- Темный
+    })
+    gradient.Transparency = NumberSequence.new(0) -- Полностью непрозрачный
+    gradient.Rotation = 32.5
+    gradient.Parent = parent
+    return gradient
 end
 
 local function animateButtonClick(button)
-	local originalColor = button.BackgroundColor3
-	local originalSize = button.Size
-	
-	local tweenIn = TweenService:Create(button, TweenInfo.new(0.1), {
-		BackgroundColor3 = Color3.fromRGB(20, 20, 30),
-		Size = UDim2.new(originalSize.X.Scale, originalSize.X.Offset - 2, originalSize.Y.Scale, originalSize.Y.Offset - 2)
-	})
-	tweenIn:Play()
-	
-	spawn(function()
-		wait(0.2)
-		local tweenOut = TweenService:Create(button, TweenInfo.new(0.1), {
-			BackgroundColor3 = originalColor,
-			Size = originalSize
-		})
-		tweenOut:Play()
-	end)
+    local originalColor = button.BackgroundColor3
+    local originalSize = button.Size
+    
+    local tweenIn = TweenService:Create(button, TweenInfo.new(0.1), {
+        BackgroundColor3 = Color3.fromRGB(30, 30, 40),
+        Size = UDim2.new(originalSize.X.Scale, originalSize.X.Offset - 2, originalSize.Y.Scale, originalSize.Y.Offset - 2)
+    })
+    tweenIn:Play()
+    
+    spawn(function()
+        wait(0.2)
+        local tweenOut = TweenService:Create(button, TweenInfo.new(0.1), {
+            BackgroundColor3 = originalColor,
+            Size = originalSize
+        })
+        tweenOut:Play()
+    end)
 end
 
 local function findAllHousesInOrder()
-	local allHouses = {}
-	
-	local houses = workspace:FindFirstChild("Houses")
-	if not houses then
-		return allHouses
-	end
+    local allHouses = {}
+    
+    local houses = workspace:FindFirstChild("Houses")
+    if not houses then
+        return allHouses
+    end
 
-	for _, house in pairs(houses:GetChildren()) do
-		local doorModel = house:FindFirstChild("Door")
-		if doorModel and doorModel:IsA("Model") then
-			local doorPart = doorModel.PrimaryPart
-			if not doorPart then
-				for _, part in pairs(doorModel:GetChildren()) do
-					if part:IsA("BasePart") then
-						doorPart = part
-						break
-					end
-				end
-			end
-			
-			if doorPart then
-				table.insert(allHouses, {
-					house = house,
-					doorPart = doorPart,
-					houseName = house.Name
-				})
-			end
-		end
-	end
+    for _, house in pairs(houses:GetChildren()) do
+        local doorModel = house:FindFirstChild("Door")
+        if doorModel and doorModel:IsA("Model") then
+            local doorPart = doorModel.PrimaryPart
+            if not doorPart then
+                for _, part in pairs(doorModel:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        doorPart = part
+                        break
+                    end
+                end
+            end
+            
+            if doorPart then
+                table.insert(allHouses, {
+                    house = house,
+                    doorPart = doorPart,
+                    houseName = house.Name
+                })
+            end
+        end
+    end
 
-	return allHouses
+    return allHouses
 end
 
 local function updateHouseCount()
-	local allHouses = findAllHousesInOrder()
-	currentHouseCount = #allHouses
-	
-	if houseInfoLabel and houseInfoLabel.Parent then
-		houseInfoLabel.Text = "🏠 " .. currentHouseCount .. " Houses"
-	end
-	
-	return currentHouseCount
+    local allHouses = findAllHousesInOrder()
+    currentHouseCount = #allHouses
+    
+    if houseInfoLabel and houseInfoLabel.Parent then
+        houseInfoLabel.Text = "🏠 " .. currentHouseCount .. " Houses"
+    end
+    
+    return currentHouseCount
+end
+
+-- Функция для обновления управления GUI
+local function updateGUIControls()
+    if not screenGui or not screenGui.Parent then
+        ensureGUI()
+        return
+    end
+    
+    local mainFrame = screenGui:FindFirstChild("CandyFarm") and screenGui.CandyFarm:FindFirstChildOfClass("Frame")
+    if not mainFrame then
+        ensureGUI()
+        return
+    end
+    
+    -- Обновляем позицию если вышла за пределы экрана
+    mainFrame.Position = clampPosition(mainFrame.Position, mainFrame.Size)
+    
+    -- Обновляем состояние кнопки
+    local contentFrame = mainFrame:FindFirstChild("ContentFrame")
+    if contentFrame then
+        local toggleButton = contentFrame:FindFirstChildOfClass("TextButton")
+        local statusLabel = contentFrame:FindFirstChild("StatusLabel")
+        
+        if toggleButton and statusLabel then
+            if isEnabled then
+                toggleButton.Text = "⏹ Stop"
+                statusLabel.Text = "✅ ON"
+                statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+            else
+                toggleButton.Text = "▶ Start"
+                statusLabel.Text = "❌ OFF"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
+        end
+    end
 end
 
 local function ensureGUI()
-	if not scriptActive then
-		return nil
-	end
-	
-	if not screenGui or not screenGui.Parent then
-		screenGui = Instance.new("ScreenGui")
-		screenGui.Name = "MobileAutoTP"
-		screenGui.Parent = CoreGui
-		screenGui.ResetOnSpawn = false
-		screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-		screenGui.DisplayOrder = 999
+    if not scriptActive then
+        return nil
+    end
+    
+    if not screenGui or not screenGui.Parent then
+        screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "CandyFarmGUI"
+        screenGui.Parent = CoreGui
+        screenGui.ResetOnSpawn = false
+        screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        screenGui.DisplayOrder = 999
 
-		local mainFrame = Instance.new("Frame")
-		mainFrame.Size = UDim2.new(0, 200, 0, 120)
-		mainFrame.Position = UDim2.new(0, 20, 0, 20)
-		mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-		mainFrame.BorderSizePixel = 0
-		mainFrame.Parent = screenGui
+        local mainFrame = Instance.new("Frame")
+        mainFrame.Name = "MainFrame"
+        mainFrame.Size = UDim2.new(0, 200, 0, 120)
+        mainFrame.Position = UDim2.new(0, 20, 0, 20)
+        mainFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        mainFrame.BorderSizePixel = 0
+        mainFrame.Parent = screenGui
 
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 8)
-		corner.Parent = mainFrame
+        -- Добавляем градиент к основному фрейму
+        createGradient(mainFrame, Color3.fromRGB(50, 50, 60))
 
-		local stroke = Instance.new("UIStroke")
-		stroke.Color = Color3.fromRGB(80, 80, 100)
-		stroke.Thickness = 2
-		stroke.Parent = mainFrame
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 8)
+        corner.Parent = mainFrame
 
-		local topBar = Instance.new("Frame")
-		topBar.Size = UDim2.new(1, 0, 0, 25)
-		topBar.Position = UDim2.new(0, 0, 0, 0)
-		topBar.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-		topBar.BorderSizePixel = 0
-		topBar.Parent = mainFrame
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(100, 100, 120)
+        stroke.Thickness = 2
+        stroke.Parent = mainFrame
 
-		local topBarCorner = Instance.new("UICorner")
-		topBarCorner.CornerRadius = UDim.new(0, 8)
-		topBarCorner.Parent = topBar
+        local topBar = Instance.new("Frame")
+        topBar.Name = "TopBar"
+        topBar.Size = UDim2.new(1, 0, 0, 25)
+        topBar.Position = UDim2.new(0, 0, 0, 0)
+        topBar.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        topBar.BorderSizePixel = 0
+        topBar.Parent = mainFrame
 
-		local titleLabel = Instance.new("TextLabel")
-		titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
-		titleLabel.Position = UDim2.new(0, 5, 0, 0)
-		titleLabel.BackgroundTransparency = 1
-		titleLabel.Text = "📱 Auto TP"
-		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		titleLabel.TextSize = 12
-		titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-		titleLabel.Font = Enum.Font.GothamBold
-		titleLabel.Parent = topBar
+        -- Добавляем градиент к верхней панели
+        createGradient(topBar, Color3.fromRGB(60, 60, 70))
 
-		local minimizeBtn = Instance.new("TextButton")
-		minimizeBtn.Size = UDim2.new(0, 20, 0, 20)
-		minimizeBtn.Position = UDim2.new(1, -45, 0, 2)
-		minimizeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-		minimizeBtn.Text = "─"
-		minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		minimizeBtn.TextSize = 14
-		minimizeBtn.Font = Enum.Font.GothamBold
-		minimizeBtn.AutoButtonColor = false
-		minimizeBtn.Parent = topBar
+        local topBarCorner = Instance.new("UICorner")
+        topBarCorner.CornerRadius = UDim.new(0, 8)
+        topBarCorner.Parent = topBar
 
-		local minBtnCorner = Instance.new("UICorner")
-		minBtnCorner.CornerRadius = UDim.new(0, 4)
-		minBtnCorner.Parent = minimizeBtn
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Size = UDim2.new(0.6, 0, 1, 0)
+        titleLabel.Position = UDim2.new(0, 5, 0, 0)
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.Text = "🍭 CandyFarm"
+        titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        titleLabel.TextSize = 12
+        titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        titleLabel.Font = Enum.Font.GothamBold
+        titleLabel.Parent = topBar
 
-		local closeBtn = Instance.new("TextButton")
-		closeBtn.Size = UDim2.new(0, 20, 0, 20)
-		closeBtn.Position = UDim2.new(1, -22, 0, 2)
-		closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-		closeBtn.Text = "×"
-		closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		closeBtn.TextSize = 14
-		closeBtn.Font = Enum.Font.GothamBold
-		closeBtn.AutoButtonColor = false
-		closeBtn.Parent = topBar
+        local minimizeBtn = Instance.new("TextButton")
+        minimizeBtn.Size = UDim2.new(0, 20, 0, 20)
+        minimizeBtn.Position = UDim2.new(1, -45, 0, 2)
+        minimizeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        minimizeBtn.Text = "─"
+        minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        minimizeBtn.TextSize = 14
+        minimizeBtn.Font = Enum.Font.GothamBold
+        minimizeBtn.AutoButtonColor = false
+        minimizeBtn.Parent = topBar
 
-		local closeBtnCorner = Instance.new("UICorner")
-		closeBtnCorner.CornerRadius = UDim.new(0, 4)
-		closeBtnCorner.Parent = closeBtn
+        -- Добавляем градиент к кнопке минимизации
+        createGradient(minimizeBtn, Color3.fromRGB(80, 80, 90))
 
-		local contentFrame = Instance.new("Frame")
-		contentFrame.Size = UDim2.new(1, 0, 1, -25)
-		contentFrame.Position = UDim2.new(0, 0, 0, 25)
-		contentFrame.BackgroundTransparency = 1
-		contentFrame.Parent = mainFrame
-		contentFrame.Visible = true
+        local minBtnCorner = Instance.new("UICorner")
+        minBtnCorner.CornerRadius = UDim.new(0, 4)
+        minBtnCorner.Parent = minimizeBtn
 
-		local toggleButton = Instance.new("TextButton")
-		toggleButton.Size = UDim2.new(0.9, 0, 0, 35)
-		toggleButton.Position = UDim2.new(0.05, 0, 0, 10)
-		toggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-		toggleButton.Text = "▶ Start"
-		toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-		toggleButton.TextSize = 14
-		toggleButton.Font = Enum.Font.GothamBold
-		toggleButton.AutoButtonColor = false
-		toggleButton.Parent = contentFrame
+        local closeBtn = Instance.new("TextButton")
+        closeBtn.Size = UDim2.new(0, 20, 0, 20)
+        closeBtn.Position = UDim2.new(1, -22, 0, 2)
+        closeBtn.BackgroundColor3 = Color3.fromRGB(220, 80, 80)
+        closeBtn.Text = "×"
+        closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        closeBtn.TextSize = 14
+        closeBtn.Font = Enum.Font.GothamBold
+        closeBtn.AutoButtonColor = false
+        closeBtn.Parent = topBar
 
-		local buttonCorner = Instance.new("UICorner")
-		buttonCorner.CornerRadius = UDim.new(0, 6)
-		buttonCorner.Parent = toggleButton
+        -- Добавляем градиент к кнопке закрытия
+        createGradient(closeBtn, Color3.fromRGB(220, 80, 80))
 
-		local buttonStroke = Instance.new("UIStroke")
-		buttonStroke.Color = Color3.fromRGB(80, 80, 100)
-		buttonStroke.Thickness = 2
-		buttonStroke.Parent = toggleButton
+        local closeBtnCorner = Instance.new("UICorner")
+        closeBtnCorner.CornerRadius = UDim.new(0, 4)
+        closeBtnCorner.Parent = closeBtn
 
-		local statusLabel = Instance.new("TextLabel")
-		statusLabel.Size = UDim2.new(1, 0, 0, 20)
-		statusLabel.Position = UDim2.new(0, 5, 0, 50)
-		statusLabel.BackgroundTransparency = 1
-		statusLabel.Text = "❌ OFF"
-		statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-		statusLabel.TextSize = 11
-		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-		statusLabel.Font = Enum.Font.GothamBold
-		statusLabel.Parent = contentFrame
+        local contentFrame = Instance.new("Frame")
+        contentFrame.Name = "ContentFrame"
+        contentFrame.Size = UDim2.new(1, 0, 1, -25)
+        contentFrame.Position = UDim2.new(0, 0, 0, 25)
+        contentFrame.BackgroundTransparency = 1
+        contentFrame.Parent = mainFrame
+        contentFrame.Visible = true
 
-		local infoLabel = Instance.new("TextLabel")
-		infoLabel.Size = UDim2.new(1, 0, 0, 20)
-		infoLabel.Position = UDim2.new(0, 5, 0, 70)
-		infoLabel.BackgroundTransparency = 1
-		infoLabel.Text = "🏠 0 Houses"
-		infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-		infoLabel.TextSize = 11
-		infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-		infoLabel.Font = Enum.Font.Gotham
-		infoLabel.Parent = contentFrame
-		houseInfoLabel = infoLabel
+        local toggleButton = Instance.new("TextButton")
+        toggleButton.Size = UDim2.new(0.9, 0, 0, 35)
+        toggleButton.Position = UDim2.new(0.05, 0, 0, 10)
+        toggleButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        toggleButton.Text = "▶ Start"
+        toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        toggleButton.TextSize = 14
+        toggleButton.Font = Enum.Font.GothamBold
+        toggleButton.AutoButtonColor = false
+        toggleButton.Parent = contentFrame
 
-		local dragging = false
-		local dragInput, dragStart, startPos
+        -- Добавляем градиент к кнопке переключения
+        createGradient(toggleButton, Color3.fromRGB(60, 60, 70))
 
-		local function update(input)
-			local delta = input.Position - dragStart
-			local newPosition = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-			mainFrame.Position = clampPosition(newPosition, mainFrame.Size)
-		end
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 6)
+        buttonCorner.Parent = toggleButton
 
-		topBar.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-				dragging = true
-				dragStart = input.Position
-				startPos = mainFrame.Position
+        local buttonStroke = Instance.new("UIStroke")
+        buttonStroke.Color = Color3.fromRGB(100, 100, 120)
+        buttonStroke.Thickness = 2
+        buttonStroke.Parent = toggleButton
 
-				input.Changed:Connect(function()
-					if input.UserInputState == Enum.UserInputState.End then
-						dragging = false
-					end
-				end)
-			end
-		end)
+        local statusLabel = Instance.new("TextLabel")
+        statusLabel.Name = "StatusLabel"
+        statusLabel.Size = UDim2.new(1, 0, 0, 20)
+        statusLabel.Position = UDim2.new(0, 5, 0, 50)
+        statusLabel.BackgroundTransparency = 1
+        statusLabel.Text = "❌ OFF"
+        statusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+        statusLabel.TextSize = 11
+        statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        statusLabel.Font = Enum.Font.GothamBold
+        statusLabel.Parent = contentFrame
 
-		topBar.InputChanged:Connect(function(input)
-			if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) and dragging then
-				dragInput = input
-			end
-		end)
+        local infoLabel = Instance.new("TextLabel")
+        infoLabel.Name = "InfoLabel"
+        infoLabel.Size = UDim2.new(1, 0, 0, 20)
+        infoLabel.Position = UDim2.new(0, 5, 0, 70)
+        infoLabel.BackgroundTransparency = 1
+        infoLabel.Text = "🏠 0 Houses"
+        infoLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+        infoLabel.TextSize = 11
+        infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+        infoLabel.Font = Enum.Font.Gotham
+        infoLabel.Parent = contentFrame
+        houseInfoLabel = infoLabel
 
-		UserInputService.InputChanged:Connect(function(input)
-			if input == dragInput and dragging then
-				update(input)
-			end
-		end)
+        -- Добавляем прозрачный текст с именем в правом нижнем углу
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "NameLabel"
+        nameLabel.Size = UDim2.new(1, 0, 0, 15)
+        nameLabel.Position = UDim2.new(0, 0, 1, -15)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = "@tt_losos1 (WooDeax) "
+        nameLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+        nameLabel.TextTransparency = 0.7 -- Прозрачность текста
+        nameLabel.TextSize = 10
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Right
+        nameLabel.TextYAlignment = Enum.TextYAlignment.Bottom
+        nameLabel.Font = Enum.Font.Gotham
+        nameLabel.Parent = contentFrame
 
-		local function updateButtonAppearance()
-			if isEnabled then
-				toggleButton.Text = "⏹ Stop"
-				statusLabel.Text = "✅ ON"
-				statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-			else
-				toggleButton.Text = "▶ Start"
-				statusLabel.Text = "❌ OFF"
-				statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-			end
-		end
+        local dragging = false
+        local dragInput, dragStart, startPos
 
-		local function handleToggle()
-			local currentTime = tick()
-			if currentTime - lastToggleTime < TOGGLE_COOLDOWN then
-				return
-			end
-			
-			lastToggleTime = currentTime
-			animateButtonClick(toggleButton)
-			
-			isEnabled = not isEnabled
-			updateButtonAppearance()
+        local function update(input)
+            local delta = input.Position - dragStart
+            local newPosition = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            mainFrame.Position = clampPosition(newPosition, mainFrame.Size)
+        end
 
-			if isEnabled then
-				startMainLoop()
-			else
-				stopMainLoop()
-			end
-		end
+        topBar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                dragStart = input.Position
+                startPos = mainFrame.Position
 
-		toggleButton.MouseButton1Click:Connect(handleToggle)
-		toggleButton.TouchTap:Connect(handleToggle)
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                    end
+                end)
+            end
+        end)
 
-		minimizeBtn.MouseButton1Click:Connect(function()
-			isMinimized = not isMinimized
-			contentFrame.Visible = not isMinimized
-			if isMinimized then
-				mainFrame.Size = UDim2.new(0, 200, 0, 25)
-				minimizeBtn.Text = "＋"
-			else
-				mainFrame.Size = UDim2.new(0, 200, 0, 120)
-				minimizeBtn.Text = "─"
-			end
-			mainFrame.Position = clampPosition(mainFrame.Position, mainFrame.Size)
-		end)
+        topBar.InputChanged:Connect(function(input)
+            if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) and dragging then
+                dragInput = input
+            end
+        end)
 
-		closeBtn.MouseButton1Click:Connect(function()
-			scriptActive = false
-			stopMainLoop()
-			if screenGui then
-				screenGui:Destroy()
-				screenGui = nil
-			end
-		end)
+        UserInputService.InputChanged:Connect(function(input)
+            if input == dragInput and dragging then
+                update(input)
+            end
+        end)
 
-		updateButtonAppearance()
-		updateHouseCount()
-	end
-	return screenGui
+        local function updateButtonAppearance()
+            if isEnabled then
+                toggleButton.Text = "⏹ Stop"
+                statusLabel.Text = "✅ ON"
+                statusLabel.TextColor3 = Color3.fromRGB(120, 255, 120)
+            else
+                toggleButton.Text = "▶ Start"
+                statusLabel.Text = "❌ OFF"
+                statusLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
+            end
+        end
+
+        local function handleToggle()
+            local currentTime = tick()
+            if currentTime - lastToggleTime < TOGGLE_COOLDOWN then
+                return
+            end
+            
+            lastToggleTime = currentTime
+            animateButtonClick(toggleButton)
+            
+            isEnabled = not isEnabled
+            updateButtonAppearance()
+
+            if isEnabled then
+                -- ОЧИЩАЕМ СПИСОК ПОСЕЩЕННЫХ ДОМОВ ПРИ ЗАПУСКЕ
+                visitedHouses = {}
+                lastVisitTimes = {}
+                startMainLoop()
+            else
+                stopMainLoop()
+            end
+        end
+
+        toggleButton.MouseButton1Click:Connect(handleToggle)
+        toggleButton.TouchTap:Connect(handleToggle)
+
+        minimizeBtn.MouseButton1Click:Connect(function()
+            isMinimized = not isMinimized
+            contentFrame.Visible = not isMinimized
+            if isMinimized then
+                mainFrame.Size = UDim2.new(0, 200, 0, 25)
+                minimizeBtn.Text = "＋"
+            else
+                mainFrame.Size = UDim2.new(0, 200, 0, 120)
+                minimizeBtn.Text = "─"
+            end
+            mainFrame.Position = clampPosition(mainFrame.Position, mainFrame.Size)
+        end)
+
+        closeBtn.MouseButton1Click:Connect(function()
+            scriptActive = false
+            stopMainLoop()
+            stopControlUpdates()
+            if screenGui then
+                screenGui:Destroy()
+                screenGui = nil
+            end
+        end)
+
+        updateButtonAppearance()
+        updateHouseCount()
+    end
+    return screenGui
 end
 
-local function teleportToAllHousesInOrder()
-	if not isEnabled or isTeleporting then return end
-	
-	isTeleporting = true
+local function checkForNewHouses()
+    cleanupVisitedHouses() -- Очищаем дома которые пропали
+    
+    local allHouses = findAllHousesInOrder()
+    local newHouses = {}
+    local currentTime = tick()
+    
+    for _, houseData in ipairs(allHouses) do
+        local lastVisit = lastVisitTimes[houseData.houseName]
+        -- Если дом новый ИЛИ прошло больше 15 секунд с последнего посещения
+        if not lastVisit or (currentTime - lastVisit) > SETTINGS.REVISIT_TIME then
+            table.insert(newHouses, houseData)
+        end
+    end
+    
+    return newHouses
+end
 
-	local allHouses = findAllHousesInOrder()
-	
-	if #allHouses == 0 then
-		if houseInfoLabel then
-			houseInfoLabel.Text = "🏠 0 Houses"
-		end
-		isTeleporting = false
-		return
-	end
+local function teleportToNewHouses()
+    if not isEnabled or isTeleporting then return end
+    
+    isTeleporting = true
 
-	local character = player.Character
-	if not character then 
-		isTeleporting = false
-		return 
-	end
+    local newHouses = checkForNewHouses()
+    
+    if #newHouses == 0 then
+        isTeleporting = false
+        return
+    end
 
-	local humanoid = character:FindFirstChild("Humanoid")
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not humanoid or not rootPart or humanoid.Health <= 0 then 
-		isTeleporting = false
-		return 
-	end
+    local character = player.Character
+    if not character then 
+        isTeleporting = false
+        return 
+    end
 
-	enableNoClip(character)
+    local humanoid = character:FindFirstChild("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart or humanoid.Health <= 0 then 
+        isTeleporting = false
+        return 
+    end
 
-	if houseInfoLabel then
-		houseInfoLabel.Text = "🏠 " .. #allHouses .. " Houses"
-	end
+    if not startPosition then
+        startPosition = rootPart.CFrame
+    end
 
-	for i, houseData in ipairs(allHouses) do
-		if not isEnabled then 
-			isTeleporting = false
-			break 
-		end
+    -- Телепорт к домам
+    for i, houseData in ipairs(newHouses) do
+        if not isEnabled then 
+            break 
+        end
 
-		rootPart.CFrame = houseData.doorPart.CFrame
-		
-		if houseInfoLabel then
-			houseInfoLabel.Text = "🏠 " .. i .. "/" .. #allHouses
-		end
+        rootPart.CFrame = houseData.doorPart.CFrame
+        visitedHouses[houseData.houseName] = true
+        lastVisitTimes[houseData.houseName] = tick()
+        
+        if houseInfoLabel then
+            houseInfoLabel.Text = "🍭 " .. i .. "/" .. #newHouses
+        end
 
-		if i < #allHouses then
-			wait(SETTINGS.WAIT_BETWEEN_DOORS)
-		end
-	end
+        wait(SETTINGS.WAIT_BETWEEN_DOORS)
+    end
 
-	if isEnabled then
-		if houseInfoLabel then
-			houseInfoLabel.Text = "✅ Done"
-		end
-		
-		wait(SETTINGS.WAIT_BEFORE_DEATH)
-		
-		if character and character:FindFirstChild("HumanoidRootPart") then
-			teleportUnderMap(character)
-			if houseInfoLabel then
-				houseInfoLabel.Text = "⬇️ Down"
-			end
-		end
-	end
-	
-	isTeleporting = false
+    -- Возвращаемся только если есть дома для посещения
+    if #newHouses > 0 and isEnabled and character and character:FindFirstChild("HumanoidRootPart") then
+        if houseInfoLabel then
+            houseInfoLabel.Text = "↩ Return"
+        end
+        wait(0.5)
+        rootPart.CFrame = startPosition
+    end
+    
+    isTeleporting = false
 end
 
 function startMainLoop()
-	if mainLoopConnection then
-		mainLoopConnection:Disconnect()
-	end
+    if mainLoopConnection then
+        mainLoopConnection:Disconnect()
+    end
 
-	mainLoopConnection = RunService.Heartbeat:Connect(function()
-		if not isEnabled then 
-			if mainLoopConnection then
-				mainLoopConnection:Disconnect()
-				mainLoopConnection = nil
-			end
-			return 
-		end
-		
-		if isTeleporting then return end
-		if not player.Character then return end
+    mainLoopConnection = RunService.Heartbeat:Connect(function()
+        if not isEnabled then 
+            if mainLoopConnection then
+                mainLoopConnection:Disconnect()
+                mainLoopConnection = nil
+            end
+            return 
+        end
+        
+        if isTeleporting then return end
+        if not player.Character then return end
 
-		local humanoid = player.Character:FindFirstChild("Humanoid")
-		local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-		if not humanoid or not rootPart or humanoid.Health <= 0 then return end
-
-		spawn(function()
-			teleportToAllHousesInOrder()
-		end)
-
-		wait(2)
-	end)
+        spawn(function()
+            teleportToNewHouses()
+        end)
+    end)
 end
 
 function stopMainLoop()
-	if mainLoopConnection then
-		mainLoopConnection:Disconnect()
-		mainLoopConnection = nil
-	end
-	isTeleporting = false
-	isEnabled = false
+    if mainLoopConnection then
+        mainLoopConnection:Disconnect()
+        mainLoopConnection = nil
+    end
+    isTeleporting = false
+    isEnabled = false
+    startPosition = nil
 
-	if houseInfoLabel then
-		local allHouses = findAllHousesInOrder()
-		houseInfoLabel.Text = "🏠 " .. #allHouses .. " Houses"
-	end
+    if houseInfoLabel then
+        local allHouses = findAllHousesInOrder()
+        houseInfoLabel.Text = "🏠 " .. #allHouses .. " Houses"
+    end
 end
 
+-- Функции для обновления управления
+function startControlUpdates()
+    if controlUpdateConnection then
+        controlUpdateConnection:Disconnect()
+    end
+    
+    controlUpdateConnection = RunService.Heartbeat:Connect(function()
+        if not scriptActive then
+            stopControlUpdates()
+            return
+        end
+    end)
+    
+    -- Запускаем периодическое обновление каждые 2 секунды
+    spawn(function()
+        while scriptActive do
+            updateGUIControls()
+            wait(SETTINGS.CONTROL_UPDATE_INTERVAL)
+        end
+    end)
+end
+
+function stopControlUpdates()
+    if controlUpdateConnection then
+        controlUpdateConnection:Disconnect()
+        controlUpdateConnection = nil
+    end
+end
+
+-- Основной запуск
 wait(2)
 ensureGUI()
+startControlUpdates()
 
 spawn(function()
-	while scriptActive do
-		updateHouseCount()
-		wait(1)
-	end
+    while scriptActive do
+        updateHouseCount()
+        wait(1)
+    end
 end)
 
 updateHouseCount()
 
-if player.Character then
-	wait(0.5)
-	enableNoClip(player.Character)
-end
-
 player.CharacterAdded:Connect(function(character)
-	if scriptActive then
-		ensureGUI()
-		wait(0.5)
-		enableNoClip(character)
-	end
+    if scriptActive then
+        ensureGUI()
+    end
 end)
 
+-- Автоматическое обновление GUI каждые 5 секунд
 spawn(function()
-	while scriptActive do
-		wait(5)
-		ensureGUI()
-	end
+    while scriptActive do
+        wait(5)
+        ensureGUI()
+    end
 end)
