@@ -108,7 +108,7 @@ local function updateHouseCount()
 	currentHouseCount = #allHouses
 	
 	if houseInfoLabel and houseInfoLabel.Parent then
-		houseInfoLabel.Text = "🏠 " .. currentHouseCount .. " домов"
+		houseInfoLabel.Text = "🏠 " .. currentHouseCount .. " Houses"
 	end
 	
 	return currentHouseCount
