@@ -1,0 +1,384 @@
+-- LocalScript для Roblox Studio (Мобильная версия)
+-- Поместить в: StarterPlayer > StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = game.Players.LocalPlayer
+
+-- Настройки
+local SETTINGS = {
+	WAIT_BETWEEN_DOORS = 1,  -- 1 секунда между дверьми
+	WAIT_BEFORE_DEATH = 1    -- 1 секунда перед ТП под карту
+}
+
+-- Переменные состояния
+local isEnabled = false
+local mainLoopConnection = nil
+local houseInfoLabel = nil
+local screenGui = nil
+local isTeleporting = false
+
+-- Включаем NoClip
+local function enableNoClip(character)
+	if character then
+		local humanoid = character:FindFirstChild("Humanoid")
+		if humanoid then
+			humanoid:ChangeState(11) -- NoClip
+		end
+	end
+end
+
+-- ТП точно на высоту -500
+local function teleportUnderMap(character)
+	if character then
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+		if rootPart then
+			-- ТП точно на высоту -500
+			local newPosition = Vector3.new(0, -500, 0)
+			rootPart.CFrame = CFrame.new(newPosition)
+		end
+	end
+end
+
+-- Восстанавливаем GUI если он был удален
+local function ensureGUI()
+	if not screenGui or not screenGui.Parent then
+		screenGui = Instance.new("ScreenGui")
+		screenGui.Name = "AutoTPGUI"
+		screenGui.Parent = player:WaitForChild("PlayerGui")
+		screenGui.ResetOnSpawn = false
+		screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling -- Для мобильных
+
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.new(0, 300, 0, 160) -- Немного больше для телефона
+		frame.Position = UDim2.new(0, 10, 0, 10)
+		frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		frame.BorderSizePixel = 2
+		frame.BorderColor3 = Color3.fromRGB(80, 80, 80)
+		frame.Parent = screenGui
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 12) -- Больше скругление
+		corner.Parent = frame
+
+		-- Заголовок
+		local titleLabel = Instance.new("TextLabel")
+		titleLabel.Size = UDim2.new(0.9, 0, 0.15, 0)
+		titleLabel.Position = UDim2.new(0.05, 0, 0.05, 0)
+		titleLabel.BackgroundTransparency = 1
+		titleLabel.Text = "📱 Авто-ТП"
+		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		titleLabel.TextSize = 18 -- Крупнее текст
+		titleLabel.Font = Enum.Font.GothamBold
+		titleLabel.Parent = frame
+
+		-- Кнопка переключения (больше для тапов)
+		local toggleButton = Instance.new("TextButton")
+		toggleButton.Size = UDim2.new(0.85, 0, 0.25, 0)
+		toggleButton.Position = UDim2.new(0.075, 0, 0.25, 0)
+		toggleButton.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+		toggleButton.Text = "▶️ ВКЛЮЧИТЬ"
+		toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		toggleButton.TextSize = 16 -- Крупнее текст
+		toggleButton.Font = Enum.Font.GothamBold
+		toggleButton.Parent = frame
+
+		local buttonCorner = Instance.new("UICorner")
+		buttonCorner.CornerRadius = UDim.new(0, 8)
+		buttonCorner.Parent = toggleButton
+
+		-- Статус
+		local statusLabel = Instance.new("TextLabel")
+		statusLabel.Size = UDim2.new(0.8, 0, 0.15, 0)
+		statusLabel.Position = UDim2.new(0.1, 0, 0.55, 0)
+		statusLabel.BackgroundTransparency = 1
+		statusLabel.Text = "❌ Выключено"
+		statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+		statusLabel.TextSize = 14
+		statusLabel.Font = Enum.Font.Gotham
+		statusLabel.Parent = frame
+
+		-- Информация о домах
+		local infoLabel = Instance.new("TextLabel")
+		infoLabel.Size = UDim2.new(0.8, 0, 0.2, 0)
+		infoLabel.Position = UDim2.new(0.1, 0, 0.75, 0)
+		infoLabel.BackgroundTransparency = 1
+		infoLabel.Text = "🏠 Домов: 0"
+		infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+		infoLabel.TextSize = 13
+		infoLabel.Font = Enum.Font.Gotham
+		infoLabel.Parent = frame
+		houseInfoLabel = infoLabel
+
+		-- Drag для перемещения GUI (больше зона для тапов)
+		local dragDetector = Instance.new("TextButton")
+		dragDetector.Size = UDim2.new(1, 0, 0.25, 0) -- Больше зона драга
+		dragDetector.Position = UDim2.new(0, 0, 0, 0)
+		dragDetector.BackgroundTransparency = 1
+		dragDetector.Text = ""
+		dragDetector.TextColor3 = Color3.fromRGB(0, 0, 0)
+		dragDetector.Parent = frame
+
+		local dragging = false
+		local dragInput, dragStart, startPos
+
+		local function update(input)
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+
+		dragDetector.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				dragStart = input.Position
+				startPos = frame.Position
+
+				input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then
+						dragging = false
+					end
+				end)
+			end
+		end)
+
+		dragDetector.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.Touch then
+				dragInput = input
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if input == dragInput and dragging then
+				update(input)
+			end
+		end)
+
+		-- Функция обновления внешнего вида кнопки
+		local function updateButtonAppearance()
+			if isEnabled then
+				toggleButton.BackgroundColor3 = Color3.fromRGB(60, 200, 60)
+				toggleButton.Text = "⏹️ ВЫКЛЮЧИТЬ"
+				statusLabel.Text = "✅ Включено"
+				statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+			else
+				toggleButton.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+				toggleButton.Text = "▶️ ВКЛЮЧИТЬ"
+				statusLabel.Text = "❌ Выключено"
+				statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+			end
+		end
+
+		-- Обработчик нажатия кнопки
+		toggleButton.MouseButton1Click:Connect(function()
+			isEnabled = not isEnabled
+			updateButtonAppearance()
+
+			if isEnabled then
+				startMainLoop()
+			else
+				stopMainLoop()
+			end
+		end)
+
+		-- Также обрабатываем тапы для мобильных
+		toggleButton.TouchTap:Connect(function()
+			isEnabled = not isEnabled
+			updateButtonAppearance()
+
+			if isEnabled then
+				startMainLoop()
+			else
+				stopMainLoop()
+			end
+		end)
+
+		updateButtonAppearance()
+	end
+	return screenGui
+end
+
+-- Находит ВСЕ дома в папке Houses по порядку
+local function findAllHousesInOrder()
+	local allHouses = {}
+
+	local houses = workspace:FindFirstChild("Houses")
+	if not houses then
+		return allHouses
+	end
+
+	-- Собираем ВСЕ дома без ограничений
+	for _, house in pairs(houses:GetChildren()) do
+		local doorModel = house:FindFirstChild("Door")
+		if doorModel and doorModel:IsA("Model") then
+			local doorPart = doorModel.PrimaryPart
+			if not doorPart then
+				for _, part in pairs(doorModel:GetChildren()) do
+					if part:IsA("BasePart") then
+						doorPart = part
+						break
+					end
+				end
+			end
+
+			if doorPart then
+				table.insert(allHouses, {
+					house = house,
+					doorPart = doorPart,
+					houseName = house.Name
+				})
+			end
+		end
+	end
+
+	return allHouses
+end
+
+-- Телепортируется по порядку ко всем домам
+local function teleportToAllHousesInOrder()
+	if not isEnabled or isTeleporting then 
+		return 
+	end
+
+	isTeleporting = true
+
+	-- Всегда получаем актуальный список домов
+	local allHouses = findAllHousesInOrder()
+
+	if #allHouses == 0 then
+		if houseInfoLabel then
+			houseInfoLabel.Text = "🏠 Домов нет"
+		end
+		isTeleporting = false
+		return
+	end
+
+	local character = player.Character
+	if not character then 
+		isTeleporting = false
+		return 
+	end
+
+	local humanoid = character:FindFirstChild("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not rootPart or humanoid.Health <= 0 then 
+		isTeleporting = false
+		return 
+	end
+
+	-- Включаем NoClip
+	enableNoClip(character)
+
+	-- Телепортируемся ко ВСЕМ домам по порядку
+	for i, houseData in ipairs(allHouses) do
+		if not isEnabled then break end
+
+		-- ТП прямо к двери
+		rootPart.CFrame = houseData.doorPart.CFrame
+
+		-- Обновляем GUI
+		if houseInfoLabel then
+			houseInfoLabel.Text = "🏠 " .. i .. "/" .. #allHouses
+		end
+
+		-- Ждем 1 секунду перед следующим ТП (кроме последнего дома)
+		if i < #allHouses then
+			wait(SETTINGS.WAIT_BETWEEN_DOORS)
+		end
+	end
+
+	-- После ВСЕХ домов - ждем 1 секунду и затем ТП под карту
+	if isEnabled then
+		if houseInfoLabel then
+			houseInfoLabel.Text = "✅ Завершено!"
+		end
+
+		-- Ждем 1 секунду перед ТП под карту
+		wait(SETTINGS.WAIT_BEFORE_DEATH)
+
+		-- ТП точно на высоту -500
+		if character then
+			teleportUnderMap(character)
+			if houseInfoLabel then
+				houseInfoLabel.Text = "⬇️ Под карту!"
+			end
+		end
+	end
+
+	isTeleporting = false
+end
+
+function startMainLoop()
+	if mainLoopConnection then
+		mainLoopConnection:Disconnect()
+	end
+
+	mainLoopConnection = RunService.Heartbeat:Connect(function()
+		if not isEnabled then
+			if mainLoopConnection then
+				mainLoopConnection:Disconnect()
+				mainLoopConnection = nil
+			end
+			return
+		end
+
+		if isTeleporting then return end
+
+		if not player.Character then return end
+
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or not rootPart or humanoid.Health <= 0 then return end
+
+		-- Запускаем телепортацию
+		spawn(function()
+			teleportToAllHousesInOrder()
+		end)
+
+		-- Ждем перед повторением
+		wait(2)
+	end)
+end
+
+function stopMainLoop()
+	if mainLoopConnection then
+		mainLoopConnection:Disconnect()
+		mainLoopConnection = nil
+	end
+	isTeleporting = false
+
+	if houseInfoLabel then
+		local allHouses = findAllHousesInOrder()
+		houseInfoLabel.Text = "🏠 Домов: " .. #allHouses
+	end
+end
+
+-- Основная инициализация
+wait(2)
+ensureGUI()
+
+-- Обновляем информацию о домах
+local allHouses = findAllHousesInOrder()
+if houseInfoLabel then
+	houseInfoLabel.Text = "🏠 Домов: " .. #allHouses
+end
+
+-- Если персонаж уже есть при загрузке
+if player.Character then
+	wait(0.5)
+	enableNoClip(player.Character)
+end
+
+player.CharacterAdded:Connect(function(character)
+	ensureGUI()
+	wait(0.5)
+	enableNoClip(character)
+end)
+
+-- Периодически проверяем GUI
+while true do
+	wait(5)
+	ensureGUI()
+end
+
