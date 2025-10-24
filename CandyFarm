@@ -9,7 +9,6 @@ local player = game.Players.LocalPlayer
 local SETTINGS = {
     WAIT_BETWEEN_DOORS = 1,
     REVISIT_TIME = 15, -- Через 15 секунд телепортируемся снова
-    CONTROL_UPDATE_INTERVAL = 2 -- Обновление управления каждые 2 секунды
 }
 
 local isEnabled = false
@@ -134,14 +133,16 @@ local function updateHouseCount()
     return currentHouseCount
 end
 
--- Функция для обновления управления GUI
+-- Функция для обновления управления GUI (теперь вызывается постоянно)
 local function updateGUIControls()
+    if not scriptActive then return end
+    
     if not screenGui or not screenGui.Parent then
         ensureGUI()
         return
     end
     
-    local mainFrame = screenGui:FindFirstChild("CandyFarm") and screenGui.CandyFarm:FindFirstChildOfClass("Frame")
+    local mainFrame = screenGui:FindFirstChild("MainFrame")
     if not mainFrame then
         ensureGUI()
         return
@@ -327,7 +328,7 @@ local function ensureGUI()
         nameLabel.Size = UDim2.new(1, 0, 0, 15)
         nameLabel.Position = UDim2.new(0, 0, 1, -15)
         nameLabel.BackgroundTransparency = 1
-        nameLabel.Text = "@tt_losos1 (WooDeax) "
+        nameLabel.Text = "@tt_losos1 (WooDeax)"
         nameLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
         nameLabel.TextTransparency = 0.7 -- Прозрачность текста
         nameLabel.TextSize = 10
@@ -484,13 +485,20 @@ local function teleportToNewHouses()
         startPosition = rootPart.CFrame
     end
 
+    -- Сохраняем текущую скорость перед телепортацией
+    local originalWalkSpeed = humanoid.WalkSpeed
+    
+    -- Устанавливаем скорость 0 чтобы не двигаться во время телепортации
+    humanoid.WalkSpeed = 0
+
     -- Телепорт к домам
     for i, houseData in ipairs(newHouses) do
         if not isEnabled then 
             break 
         end
 
-        rootPart.CFrame = houseData.doorPart.CFrame
+        -- Телепортируемся к двери
+        rootPart.CFrame = houseData.doorPart.CFrame + Vector3.new(0, 3, 0) -- Немного выше чтобы не застрять
         visitedHouses[houseData.houseName] = true
         lastVisitTimes[houseData.houseName] = tick()
         
@@ -508,6 +516,11 @@ local function teleportToNewHouses()
         end
         wait(0.5)
         rootPart.CFrame = startPosition
+    end
+    
+    -- Восстанавливаем скорость передвижения
+    if humanoid then
+        humanoid.WalkSpeed = originalWalkSpeed
     end
     
     isTeleporting = false
@@ -545,31 +558,34 @@ function stopMainLoop()
     isEnabled = false
     startPosition = nil
 
+    -- Восстанавливаем скорость передвижения при остановке
+    local character = player.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 16 -- Стандартная скорость
+        end
+    end
+
     if houseInfoLabel then
         local allHouses = findAllHousesInOrder()
         houseInfoLabel.Text = "🏠 " .. #allHouses .. " Houses"
     end
 end
 
--- Функции для обновления управления
+-- Функции для обновления управления (теперь работает постоянно)
 function startControlUpdates()
     if controlUpdateConnection then
         controlUpdateConnection:Disconnect()
     end
     
+    -- Обновляем управление каждый кадр
     controlUpdateConnection = RunService.Heartbeat:Connect(function()
         if not scriptActive then
             stopControlUpdates()
             return
         end
-    end)
-    
-    -- Запускаем периодическое обновление каждые 2 секунды
-    spawn(function()
-        while scriptActive do
-            updateGUIControls()
-            wait(SETTINGS.CONTROL_UPDATE_INTERVAL)
-        end
+        updateGUIControls()
     end)
 end
 
@@ -596,14 +612,15 @@ updateHouseCount()
 
 player.CharacterAdded:Connect(function(character)
     if scriptActive then
+        wait(1) -- Ждем пока персонаж полностью загрузится
         ensureGUI()
     end
 end)
 
--- Автоматическое обновление GUI каждые 5 секунд
+-- Автоматическое обновление GUI каждую секунду
 spawn(function()
     while scriptActive do
-        wait(5)
+        wait(1)
         ensureGUI()
     end
 end)
