@@ -22,4 +22,4 @@ end
 
 makecoollightningYOOOOOOOOOOOOOOOOOOOOOOOOOOOOO()
 
-loadstring(game:HttpGet("https://raw.githubusercontent.com/Bac0nHck/Scripts/refs/heads/main/akadmin-dropkick.lua"))()
+loadstring(game:HttpGet('https://raw.githubusercontent.com/TheRealAsu/BABFT/refs/heads/main/Loader.lua'))()
